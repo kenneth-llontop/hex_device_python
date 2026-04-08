@@ -18,10 +18,13 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -d .venv ]; then
-  uv venv --python 3.9
+# 1. Change the directory check to look for 'hexfellow'
+if [ ! -d hexfellow ]; then
+  uv venv --python 3.9 hexfellow
 fi
-source .venv/bin/activate
+
+# 2. Change the activation path to 'hexfellow/bin/activate'
+source hexfellow/bin/activate
 
 # Install hex_zmq_servers
 rm -rf dist build *.egg-info
