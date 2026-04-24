@@ -22,7 +22,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from chassis_client import ChassisClient, Odometry
+from hex_device.chassis_client import ChassisClient
 
 # Defaults
 HEX_BASE_RPC_HOST = "localhost"
