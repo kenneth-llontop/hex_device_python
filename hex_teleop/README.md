@@ -22,7 +22,15 @@ Hex Fellow Chassis (default: ws://192.168.1.230:8439)
 ## Prerequisites
 
 ```bash
-pip install flask flask-socketio websockets scipy numpy protobuf
+pip install flask flask-socketio websockets scipy numpy protobuf ruckig
+```
+
+You also need the `hex_device` package installed (provides `chassis_client` and the compiled protobuf bindings). From the repo root:
+
+```bash
+sudo apt install protobuf-compiler   # needed once, to compile .proto files
+cd ~/hex_device_python
+pip install -e .
 ```
 
 ## Quick start
@@ -81,7 +89,7 @@ MAX_ACCEL = np.array([0.25, 0.25, 0.79])   # m/s^2, m/s^2, rad/s^2
    - **Listener thread** draining phone messages into `BaseTeleopController`, which computes position targets using the same reference-pose logic as TidyBot++'s `TeleopController`
    - **50 Hz control loop** reading chassis odometry, computing position error to the phone target, running a trapezoidal OTG velocity profile generator (respecting max velocity and acceleration limits), transforming global-frame velocity to body-frame, and sending to the chassis via RPC
 
-3. The OTG generates smooth acceleration/deceleration profiles to track position targets, the same behavior as TidyBot++'s Ruckig-based trajectory generator implemented as a lightweight trapezoidal profile.
+3. The OTG uses the [Ruckig](https://github.com/pantor/ruckig) library to generate jerk-aware smooth velocity profiles that track position targets while respecting max velocity and acceleration constraints, matching the approach used by TidyBot++'s `Vehicle` controller.
 
 ## Troubleshooting
 

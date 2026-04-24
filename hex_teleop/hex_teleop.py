@@ -39,6 +39,7 @@ from queue import Queue
 import numpy as np
 from flask import Flask, render_template
 from flask_socketio import SocketIO, emit
+from ruckig import InputParameter, OutputParameter, Result, Ruckig, ControlInterface
 from scipy.spatial.transform import Rotation as R
 
 from hex_base_server import HexBaseManager, HEX_BASE_RPC_HOST, HEX_BASE_RPC_PORT, HEX_RPC_AUTHKEY
@@ -204,52 +205,63 @@ class WebServer:
 
 
 # ---------------------------------------------------------------------------
-# OTG velocity generator
+# Ruckig-based OTG velocity generator
 # ---------------------------------------------------------------------------
 
-class SimpleOTG:
-    """Trapezoidal velocity profile generator (1-D per axis).
+class RuckigOTG:
+    """Ruckig online trajectory generator for (x, y, yaw) position targets.
 
-    A lightweight stand-in for Ruckig that respects max velocity and max
-    acceleration limits.  At each tick it computes the velocity needed to
-    reach the target position while decelerating in time, clamped to limits.
+    Same formulation as tidybot2's base_controller.Vehicle: Ruckig runs in
+    position-control mode, generates a smooth velocity profile that respects
+    max_velocity and max_acceleration, and we read .new_velocity each tick.
+
+    Yaw handling: Ruckig treats every dof as linear, so odometry yaw wrap
+    (±π boundary) has to be removed before feeding in a current position.
+    We "unwrap" the current yaw onto the same branch as the target so Ruckig
+    always sees the shortest rotation.
     """
 
     def __init__(self, max_vel, max_accel, dt):
-        self.max_vel = np.asarray(max_vel, dtype=float)
-        self.max_accel = np.asarray(max_accel, dtype=float)
+        self.num_dofs = 3
         self.dt = dt
-        self.vel = np.zeros_like(self.max_vel)
+        self.otg = Ruckig(self.num_dofs, dt)
+        self.inp = InputParameter(self.num_dofs)
+        self.out = OutputParameter(self.num_dofs)
+        self.inp.max_velocity = np.asarray(max_vel, dtype=float)
+        self.inp.max_acceleration = np.asarray(max_accel, dtype=float)
+        self.inp.control_interface = ControlInterface.Position
+        self.res = Result.Finished
+        self._initialized = False
+
+    def reset(self, current_pos):
+        """Re-seed internal state to current_pos with zero velocity."""
+        self.inp.current_position = current_pos.tolist()
+        self.inp.current_velocity = [0.0, 0.0, 0.0]
+        self.inp.current_acceleration = [0.0, 0.0, 0.0]
+        self.inp.target_position = current_pos.tolist()
+        self.inp.target_velocity = [0.0, 0.0, 0.0]
+        self.res = Result.Working
+        self._initialized = True
 
     def update(self, current_pos, target_pos):
-        """Return the velocity to command this tick."""
-        error = target_pos - current_pos
+        """Return the global-frame velocity to command this tick."""
+        # Unwrap current yaw onto the same branch as target yaw so Ruckig
+        # sees a continuous signal (no 2π jumps from odometry).
+        current = current_pos.copy()
+        yaw_err = (target_pos[2] - current[2] + math.pi) % TWO_PI - math.pi
+        current[2] = target_pos[2] - yaw_err
 
-        # Angle-wrap the yaw error
-        error[2] = (error[2] + math.pi) % TWO_PI - math.pi
+        if not self._initialized:
+            self.reset(current)
 
-        # Desired velocity to reach target (proportional, capped by kinematics)
-        # v_desired = sign(e) * min(|e|/dt, v_max)
-        #   but we also need to be able to decelerate to zero in time, so
-        #   v_stop = sqrt(2 * a_max * |e|)
-        v_desired = np.sign(error) * np.minimum(
-            np.abs(error) / self.dt,
-            np.minimum(self.max_vel,
-                       np.sqrt(2.0 * self.max_accel * np.abs(error)))
-        )
+        self.inp.current_position = current.tolist()
+        self.inp.target_position = target_pos.tolist()
+        self.inp.target_velocity = [0.0, 0.0, 0.0]
 
-        # Clamp acceleration
-        dv = v_desired - self.vel
-        dv = np.clip(dv, -self.max_accel * self.dt, self.max_accel * self.dt)
-        self.vel += dv
+        self.res = self.otg.update(self.inp, self.out)
+        self.out.pass_to_input(self.inp)
 
-        # Clamp velocity
-        self.vel = np.clip(self.vel, -self.max_vel, self.max_vel)
-
-        return self.vel.copy()
-
-    def reset(self):
-        self.vel[:] = 0.0
+        return np.array(self.out.new_velocity)
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +294,7 @@ def main():
     # -- Teleop state machine ----------------------------------------------
     controller = BaseTeleopController()
     teleop_state = None  # episode_started / episode_ended / reset_env
-    otg = SimpleOTG(MAX_VEL, MAX_ACCEL, CONTROL_PERIOD)
+    otg = RuckigOTG(MAX_VEL, MAX_ACCEL, CONTROL_PERIOD)
 
     def listener_loop():
         """Drain the web-server queue and feed messages to the controller."""
@@ -307,7 +319,14 @@ def main():
             while teleop_state != 'episode_started':
                 time.sleep(0.01)
             print("Episode started – teleop active")
-            otg.reset()
+
+            # Seed OTG with current pose so first velocity is zero
+            odom0 = base.get_odometry()
+            seed_pose = (
+                np.array([odom0['pos_x'], odom0['pos_y'], odom0['yaw']])
+                if odom0 is not None else np.zeros(3)
+            )
+            otg.reset(seed_pose)
 
             # -- 50 Hz control loop ----------------------------------------
             episode_running = True
@@ -343,15 +362,15 @@ def main():
                     # 6. Send to chassis
                     base.set_velocity(vx_body, vy_body, omega)
                 else:
-                    # No teleop input – zero velocity
+                    # No teleop input – zero velocity, keep OTG in sync
                     base.set_velocity(0.0, 0.0, 0.0)
-                    otg.reset()
+                    otg.reset(current_pose)
 
                 # Check for episode end / reset
                 if teleop_state == 'episode_ended':
                     print("Episode ended.")
                     base.set_velocity(0.0, 0.0, 0.0)
-                    otg.reset()
+                    otg.reset(current_pose)
                     # Keep running until reset_env
                     while teleop_state != 'reset_env':
                         time.sleep(0.01)
