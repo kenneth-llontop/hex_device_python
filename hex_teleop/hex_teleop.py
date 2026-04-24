@@ -272,7 +272,8 @@ def main():
     parser = argparse.ArgumentParser(description="Hex chassis phone teleop")
     parser.add_argument("--rpc-host", default=HEX_BASE_RPC_HOST)
     parser.add_argument("--rpc-port", type=int, default=HEX_BASE_RPC_PORT)
-    parser.add_argument("--rpc-authkey", default=HEX_RPC_AUTHKEY)
+    parser.add_argument("--rpc-authkey", default=HEX_RPC_AUTHKEY,
+                        type=lambda s: s.encode() if isinstance(s, str) else s)
     args = parser.parse_args()
 
     # -- Connect to hex_base_server RPC ------------------------------------
@@ -284,6 +285,15 @@ def main():
     base = manager.HexBase()
     print("Connected. Resetting chassis...")
     base.reset()
+
+    # Wait for first odometry sample so the control loop never starts
+    # with a zero-pose fallback.
+    for _ in range(100):  # up to ~2 s
+        if base.get_odometry() is not None:
+            break
+        time.sleep(0.02)
+    else:
+        print("WARNING: no odometry received from chassis yet")
     print("Chassis initialized.")
 
     # -- Start web server --------------------------------------------------

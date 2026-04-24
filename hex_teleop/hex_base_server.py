@@ -145,17 +145,19 @@ class HexBaseManager(MPBaseManager):
     pass
 
 
-HexBaseManager.register("HexBase", HexBase)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Hex chassis RPC server")
     parser.add_argument("--url", default=DEFAULT_CHASSIS_URL,
                         help="ChassisClient WebSocket URL")
     parser.add_argument("--host", default=HEX_BASE_RPC_HOST)
     parser.add_argument("--port", type=int, default=HEX_BASE_RPC_PORT)
-    parser.add_argument("--authkey", default=HEX_RPC_AUTHKEY)
+    parser.add_argument("--authkey", default=HEX_RPC_AUTHKEY,
+                        type=lambda s: s.encode() if isinstance(s, str) else s)
     args = parser.parse_args()
+
+    # Register HexBase with the URL from CLI so proxies created by clients
+    # use the server-configured chassis URL (not the hard-coded default).
+    HexBaseManager.register("HexBase", callable=lambda: HexBase(url=args.url))
 
     manager = HexBaseManager(
         address=(args.host, args.port), authkey=args.authkey
