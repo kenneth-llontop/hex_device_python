@@ -44,6 +44,9 @@ from scipy.spatial.transform import Rotation as R
 
 from hex_base_server import HexBaseManager, HEX_BASE_RPC_HOST, HEX_BASE_RPC_PORT, HEX_RPC_AUTHKEY
 
+# Register HexBase on the client side so the manager proxy exposes it
+HexBaseManager.register("HexBase")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

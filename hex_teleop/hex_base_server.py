@@ -77,7 +77,13 @@ class HexBase:
 
         self._start_loop()
 
-        self._client = ChassisClient(self.url)
+        # ChassisClient.__init__ constructs asyncio primitives (e.g.
+        # asyncio.Event), which on Python 3.9 require a current event loop
+        # in the calling thread. Build it *on* the background loop thread.
+        async def _build():
+            return ChassisClient(self.url)
+
+        self._client = self._run(_build())
         self._run(self._client.connect())
         self._run(self._client.initialize())
         print(
